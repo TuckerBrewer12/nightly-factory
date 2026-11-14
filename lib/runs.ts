@@ -358,6 +358,28 @@ export async function getRun(taskId: string, date: string, token?: string): Prom
   };
 }
 
+// ---------- each task's base branch against main ----------
+
+export type BaseStatus = { ahead: number; behind: number; url: string } | null;
+
+export async function baseStatuses(token?: string): Promise<Record<string, BaseStatus>> {
+  const out: Record<string, BaseStatus> = {};
+  await Promise.all(
+    factory.tasks.map(async (t) => {
+      try {
+        const c = await ghGet<{ ahead_by: number; behind_by: number; html_url: string }>(
+          `${repoPath()}/compare/${encodeURIComponent(factory.mainBranch)}...${encodeURIComponent(t.baseBranch)}?per_page=1`,
+          token,
+        );
+        out[t.id] = { ahead: c.ahead_by, behind: c.behind_by, url: c.html_url };
+      } catch {
+        out[t.id] = null;
+      }
+    }),
+  );
+  return out;
+}
+
 // ---------- the overview's numbers ----------
 
 export type TaskStats = {

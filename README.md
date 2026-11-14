@@ -38,3 +38,5 @@ Dev shortcut, without OAuth: set `FACTORY_DEV_LOGIN=<your login>` (and optionall
 ## Config
 
 `factory.config.ts` lists the repo, the artifacts branch and the tasks: one per scheduled task, keyed by branch prefix. Add a task there and its runs appear.
+
+Each task has its own long-lived base branch (`factory/design`, `factory/library-feature`, `factory/cleanup`, `factory/speed`). A run's PR goes into its task's branch, so accepted work collects there, and you merge each into main when you're ready. The task cards show how far each branch is ahead of or behind main, linked to the compare view.

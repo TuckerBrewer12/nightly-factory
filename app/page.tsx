@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { factory } from "@/factory.config";
 import { ErrorPanel, formatNight, Header, SectionTitle, TaskTag, timeAgo, VERDICT_DOT, VerdictPill } from "@/components/ui";
-import { isAccepted, lastNights, listRuns, needsYou, taskStats, VERDICT_TEXT, type RunSummary } from "@/lib/runs";
+import { baseStatuses, isAccepted, lastNights, listRuns, needsYou, taskStats, VERDICT_TEXT, type BaseStatus, type RunSummary } from "@/lib/runs";
 import { requireViewer } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +13,9 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const { task: taskFilter, show } = await searchParams;
 
   let runs: RunSummary[];
+  let bases: Record<string, BaseStatus>;
   try {
-    runs = await listRuns(viewer.token);
+    [runs, bases] = await Promise.all([listRuns(viewer.token), baseStatuses(viewer.token)]);
   } catch (e) {
     return (
       <>
@@ -87,9 +88,11 @@ export default async function Overview({ searchParams }: { searchParams: Promise
             {stats.map((s) => {
               const total = Math.max(1, s.runs);
               return (
-                <Link key={s.task.id} href={`/?task=${s.task.id}#runs`} className="rounded-xl border border-line bg-panel p-5 hover:border-line-strong">
+                <div key={s.task.id} className="flex flex-col rounded-xl border border-line bg-panel p-5 hover:border-line-strong">
                   <div className="flex items-baseline justify-between">
-                    <p className="font-medium">{s.task.label}</p>
+                    <Link href={`/?task=${s.task.id}#runs`} className="font-medium hover:underline">
+                      {s.task.label}
+                    </Link>
                     <p className="font-mono text-[11px] text-ink-3">{s.task.schedule}</p>
                   </div>
                   <p className="mt-1 line-clamp-2 min-h-10 text-xs text-ink-3">{s.task.blurb}</p>
@@ -103,12 +106,13 @@ export default async function Overview({ searchParams }: { searchParams: Promise
                     <span className="bg-warn/80" style={{ width: `${(s.open / total) * 100}%` }} />
                     <span className="bg-ink-3/60" style={{ width: `${(s.rejected / total) * 100}%` }} />
                   </div>
-                  <dl className="mt-4 grid grid-cols-3 gap-2 text-xs">
+                  <dl className="mb-4 mt-4 grid grid-cols-3 gap-2 text-xs">
                     <Mini label="Open" value={s.open} />
                     <Mini label="Rejected" value={s.rejected} />
                     <Mini label="Missed" value={s.missed} bad={s.missed > 0} />
                   </dl>
-                </Link>
+                  <BaseLine branch={s.task.baseBranch} status={bases[s.task.id]} />
+                </div>
               );
             })}
           </div>
@@ -213,6 +217,27 @@ function Kpi({ label, value, hint, tone = "ink" }: { label: string; value: numbe
       <p className="text-xs text-ink-3">{label}</p>
       <p className={`mt-2 font-mono text-3xl tabular-nums ${color}`}>{value}</p>
       {hint && <p className="mt-1 text-xs text-ink-3">{hint}</p>}
+    </div>
+  );
+}
+
+function BaseLine({ branch, status }: { branch: string; status: BaseStatus | undefined }) {
+  return (
+    <div className="mt-auto border-t border-line pt-3 text-xs">
+      <p className="truncate font-mono text-[11px] text-ink-2">{branch}</p>
+      {status ? (
+        <a href={status.url} target="_blank" rel="noreferrer" className="mt-0.5 block text-ink-3 hover:text-ink">
+          {status.ahead === 0 && status.behind === 0 ? (
+            "Same as main"
+          ) : (
+            <>
+              <span className={status.ahead ? "text-ok" : ""}>{status.ahead} ahead</span>, <span className={status.behind ? "text-warn" : ""}>{status.behind} behind</span> main ↗
+            </>
+          )}
+        </a>
+      ) : (
+        <p className="mt-0.5 text-bad">Branch not found</p>
+      )}
     </div>
   );
 }
