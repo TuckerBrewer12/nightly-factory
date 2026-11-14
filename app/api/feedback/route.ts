@@ -20,9 +20,9 @@ const MARK: Record<Exclude<Action, "merge" | "reopen">, string> = {
 };
 
 export async function POST(req: NextRequest) {
-  // Local dev has no OAuth token, so writes need a real session.
+  // Writes need a real GitHub session; the local dev login is read-only.
   const viewer = await getViewer();
-  if (!viewer?.token) return NextResponse.json({ error: "Sign in with GitHub to leave feedback." }, { status: 401 });
+  if (!viewer?.token || viewer.dev) return NextResponse.json({ error: "Sign in with GitHub to leave feedback." }, { status: 401 });
 
   const { pr, action, text } = (await req.json()) as { pr?: number; action?: Action; text?: string };
   if (!pr || !Number.isInteger(pr) || !action || !(action in HEAD || action === "merge" || action === "reopen")) {

@@ -263,7 +263,7 @@ export default async function RunPage({
             <div className="rounded-xl border border-line bg-panel p-4">
               <p className="mb-3 text-sm font-medium">Your feedback</p>
               {pr ? (
-                <FeedbackPanel pr={pr.number} open={pr.state === "open"} draft={pr.draft} merged={!!pr.merged_at} canWrite={!!viewer.token} />
+                <FeedbackPanel pr={pr.number} open={pr.state === "open"} draft={pr.draft} merged={!!pr.merged_at} canWrite={!!viewer.token && !viewer.dev} />
               ) : (
                 <p className="text-sm text-ink-2">
                   This run couldn&apos;t open a PR, so there&apos;s nothing to comment on.

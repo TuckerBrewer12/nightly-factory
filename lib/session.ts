@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 // The session is an AES-GCM sealed cookie: { login, avatar, token, exp }.
 // The token is the viewer's GitHub OAuth token, so feedback posts as them.
 
-export type Viewer = { login: string; avatar: string; token: string; exp: number };
+export type Viewer = { login: string; avatar: string; token: string; exp: number; dev?: boolean };
 
 const COOKIE = "factory_session";
 const enc = new TextEncoder();
@@ -46,10 +46,10 @@ export function allowedUsers() {
 }
 
 // Local development without OAuth: FACTORY_DEV_LOGIN names who you are,
-// and reads go out unauthenticated (or with GITHUB_TOKEN).
+// and reads go out unauthenticated (or with GITHUB_TOKEN). A dev viewer can never write.
 function devViewer(): Viewer | null {
   if (process.env.NODE_ENV === "production" || !process.env.FACTORY_DEV_LOGIN) return null;
-  return { login: process.env.FACTORY_DEV_LOGIN, avatar: "", token: process.env.GITHUB_TOKEN ?? "", exp: Infinity };
+  return { login: process.env.FACTORY_DEV_LOGIN, avatar: "", token: "", exp: Infinity, dev: true };
 }
 
 export async function getViewer(): Promise<Viewer | null> {
