@@ -2,8 +2,8 @@
 
 The factory reads three things from GitHub. Nothing else is needed.
 
-1. **The pull request.** Its head branch names the run: `nightly/<task>-YYYY-MM-DD`. Task ids are `design`, `library-feature`, `cleanup` and `speed` (see `factory.config.ts`).
-2. **`run.json`** and screenshots, on the orphan branch `factory-artifacts`, in `runs/<task>/<date>/`.
+1. **The pull request.** Its head branch names the run: `nightly/<task>-<run id>`, where the run id is the Pacific date, or the date plus a suffix for extra runs that day (`2026-11-15-step2`).
+2. **`run.json`**, screenshots and (for a run that couldn't open its PR) `run.patch`, on the orphan branch `factory-artifacts`, in `runs/<task>/<run id>/`. The worker's assignment spells out exactly what to write.
 3. **GitHub's own data** for the PR: check runs on the head commit, comments, files, and deployments (a preview deploy shows up as the **Open preview** button).
 
 A run without `run.json` still shows up. Its summary is then the first paragraph of the PR body, and the graph only has what GitHub knows.
@@ -55,6 +55,11 @@ A run without `run.json` still shows up. Its summary is then the first paragraph
 | `checks` | Checks the run ran locally. `status` is `pass`, `fail` or `skip`. |
 | `screenshots` | Paths are relative to the run's folder, or full `https://` URLs. `before` is null for a new screen. |
 | `previewUrl` | Optional. Otherwise the factory looks for a non-production GitHub deployment on the head commit (Railway and Vercel PR environments post these). |
+| `id` | The run id (folder name). Defaults to `date`. |
+| `status` | `running` while the worker is on it (the factory writes this when it starts a run), then `done`. |
+| `kind` | `change`, or `plan` for a run that only planned; then `plan` holds the plan as markdown and the page offers **Build this plan**. |
+| `patch` | `run.patch`, the run's commits from `git format-patch`, when the PR couldn't be opened. The Changes tab shows it and **Open PR** applies it. |
+| `origin` | Who or what started the run (`schedule`, `manual`, `build-step`, `open-pr`, `feedback`). The factory writes it; the worker keeps it. |
 
 Unknown fields are ignored and malformed entries are dropped, so a slightly wrong file still renders.
 

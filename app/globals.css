@@ -1,36 +1,107 @@
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #0a0a0b;
-  --color-panel: #111113;
-  --color-panel-2: #18181b;
-  --color-line: #26262b;
-  --color-line-strong: #34343a;
-  --color-ink: #ececee;
-  --color-ink-2: #a1a1aa;
-  --color-ink-3: #6b6b74;
-  --color-ok: #4ade80;
-  --color-warn: #fbbf24;
-  --color-bad: #f87171;
-  --color-info: #7dd3fc;
+/* Colours are CSS variables so light and dark switch without touching markup.
+   data-theme on <html> wins; with none, the system setting decides. */
+@theme inline {
+  --color-bg: var(--c-bg);
+  --color-panel: var(--c-panel);
+  --color-panel-2: var(--c-panel-2);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-ok: var(--c-ok);
+  --color-warn: var(--c-warn);
+  --color-bad: var(--c-bad);
+  --color-info: var(--c-info);
+  --color-accent: var(--c-accent);
+  --color-on-accent: var(--c-on-accent);
+  --color-shot: var(--c-shot);
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
-html { color-scheme: dark; }
-body { background: var(--color-bg); color: var(--color-ink); }
-
-/* Faint character field behind the graph, as a texture. */
-.char-field {
-  background-image: radial-gradient(circle at 70% 20%, rgba(255,255,255,0.035), transparent 55%);
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-bg: #0a0a0b;
+  --c-panel: #111113;
+  --c-panel-2: #18181b;
+  --c-line: #26262b;
+  --c-line-strong: #34343a;
+  --c-ink: #ececee;
+  --c-ink-2: #a1a1aa;
+  --c-ink-3: #6b6b74;
+  --c-ok: #4ade80;
+  --c-warn: #fbbf24;
+  --c-bad: #f87171;
+  --c-info: #7dd3fc;
+  --c-accent: #ececee;
+  --c-on-accent: #0a0a0b;
+  --c-shot: #050505;
+  --c-diff-add: rgba(74, 222, 128, 0.1);
+  --c-diff-del: rgba(248, 113, 113, 0.1);
 }
 
-.prose-run p { margin: 0.5rem 0; }
-.prose-run code, code.inline {
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --c-bg: #f7f7f5;
+  --c-panel: #ffffff;
+  --c-panel-2: #f1f1ef;
+  --c-line: #e4e4e0;
+  --c-line-strong: #cfcfca;
+  --c-ink: #18181b;
+  --c-ink-2: #4b4b52;
+  --c-ink-3: #7c7c84;
+  --c-ok: #15803d;
+  --c-warn: #b45309;
+  --c-bad: #dc2626;
+  --c-info: #0369a1;
+  --c-accent: #18181b;
+  --c-on-accent: #ffffff;
+  --c-shot: #e9e9e6;
+  --c-diff-add: rgba(21, 128, 61, 0.09);
+  --c-diff-del: rgba(220, 38, 38, 0.08);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --c-bg: #f7f7f5;
+    --c-panel: #ffffff;
+    --c-panel-2: #f1f1ef;
+    --c-line: #e4e4e0;
+    --c-line-strong: #cfcfca;
+    --c-ink: #18181b;
+    --c-ink-2: #4b4b52;
+    --c-ink-3: #7c7c84;
+    --c-ok: #15803d;
+    --c-warn: #b45309;
+    --c-bad: #dc2626;
+    --c-info: #0369a1;
+    --c-accent: #18181b;
+    --c-on-accent: #ffffff;
+    --c-shot: #e9e9e6;
+    --c-diff-add: rgba(21, 128, 61, 0.09);
+    --c-diff-del: rgba(220, 38, 38, 0.08);
+  }
+}
+
+body {
+  background: var(--c-bg);
+  color: var(--c-ink);
+}
+
+.diff-add { background: var(--c-diff-add); }
+.diff-del { background: var(--c-diff-del); }
+
+code.inline {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background: var(--color-panel-2);
-  border: 1px solid var(--color-line);
+  background: var(--c-panel-2);
+  border: 1px solid var(--c-line);
   border-radius: 4px;
   padding: 0 0.3em;
 }

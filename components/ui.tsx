@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { factory } from "@/factory.config";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import type { Verdict } from "@/lib/runs";
 import { VERDICT_TEXT } from "@/lib/runs";
 import type { Viewer } from "@/lib/session";
@@ -7,6 +9,9 @@ import type { Viewer } from "@/lib/session";
 const VERDICT_STYLE: Record<Verdict, string> = {
   "needs-review": "text-warn border-warn/30 bg-warn/10",
   revised: "text-warn border-warn/30 bg-warn/10",
+  unopened: "text-warn border-warn/30 bg-warn/10",
+  plan: "text-info border-info/30 bg-info/10",
+  running: "text-info border-info/30 bg-info/10",
   changes: "text-info border-info/25 bg-info/10",
   accepted: "text-ok border-ok/30 bg-ok/10",
   merged: "text-ok border-ok/30 bg-ok/10",
@@ -17,6 +22,9 @@ const VERDICT_STYLE: Record<Verdict, string> = {
 export const VERDICT_DOT: Record<Verdict, string> = {
   "needs-review": "bg-warn",
   revised: "bg-warn",
+  unopened: "bg-warn/60",
+  plan: "bg-info/70",
+  running: "bg-info",
   changes: "bg-info",
   accepted: "bg-ok",
   merged: "bg-ok",
@@ -26,8 +34,8 @@ export const VERDICT_DOT: Record<Verdict, string> = {
 
 export function VerdictPill({ verdict, className = "" }: { verdict: Verdict; className?: string }) {
   return (
-    <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium ${VERDICT_STYLE[verdict]} ${className}`}>
-      <span className={`size-1.5 rounded-full ${VERDICT_DOT[verdict]}`} />
+    <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${VERDICT_STYLE[verdict]} ${className}`}>
+      <span className={`size-1.5 rounded-full ${VERDICT_DOT[verdict]} ${verdict === "running" ? "animate-pulse" : ""}`} />
       {VERDICT_TEXT[verdict]}
     </span>
   );
@@ -37,11 +45,13 @@ export function TaskTag({ label }: { label: string }) {
   return <span className="inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-md border border-line bg-panel-2 px-2 font-mono text-[11px] text-ink-2">{label}</span>;
 }
 
-export function Header({ viewer, crumbs }: { viewer: Viewer; crumbs?: { href?: string; label: string }[] }) {
+export async function Header({ viewer, crumbs, wide }: { viewer: Viewer; crumbs?: { href?: string; label: string }[]; wide?: boolean }) {
   const { owner, name } = factory.repo;
+  const theme = (await cookies()).get("theme")?.value;
+  const initial = theme === "light" || theme === "dark" ? theme : "system";
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-5">
+      <div className={`mx-auto flex h-14 items-center gap-3 px-5 ${wide ? "max-w-none" : "max-w-6xl"}`}>
         <Link href="/" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium">
           <span className="grid size-6 place-items-center rounded-md border border-line-strong bg-panel-2 font-mono text-[11px]">nf</span>
           Nightly factory
@@ -63,8 +73,12 @@ export function Header({ viewer, crumbs }: { viewer: Viewer; crumbs?: { href?: s
           </span>
         ))}
         <div className="ml-auto flex items-center gap-3">
+          <Link href="/tasks" className="text-sm text-ink-2 hover:text-ink">
+            Tasks
+          </Link>
+          <ThemeToggle initial={initial} />
           {viewer.avatar ? <img src={viewer.avatar} alt="" className="size-6 rounded-full" /> : null}
-          <span className="hidden text-sm text-ink-2 sm:inline">{viewer.login}</span>
+          <span className="hidden text-sm text-ink-2 lg:inline">{viewer.login}</span>
           <form action="/api/auth/logout" method="post">
             <button className="whitespace-nowrap text-xs text-ink-3 hover:text-ink">Sign out</button>
           </form>
@@ -75,13 +89,13 @@ export function Header({ viewer, crumbs }: { viewer: Viewer; crumbs?: { href?: s
 }
 
 export function formatNight(date: string, style: "short" | "long" = "short") {
-  const d = new Date(`${date}T12:00:00Z`);
-  return d.toLocaleDateString("en-US", {
-    timeZone: "UTC",
-    weekday: style === "long" ? "long" : "short",
-    month: "short",
-    day: "numeric",
-  });
+  const d = new Date(`${date.slice(0, 10)}T12:00:00Z`);
+  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: style === "long" ? "long" : "short", month: "short", day: "numeric" });
+}
+
+export function runLabel(id: string) {
+  const extra = id.slice(11);
+  return extra ? `${formatNight(id)} · ${extra}` : formatNight(id);
 }
 
 export function timeAgo(iso: string, now = Date.now()) {

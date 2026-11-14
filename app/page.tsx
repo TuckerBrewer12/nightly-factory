@@ -1,21 +1,26 @@
 import Link from "next/link";
 import { factory } from "@/factory.config";
-import { ErrorPanel, formatNight, Header, SectionTitle, TaskTag, timeAgo, VERDICT_DOT, VerdictPill } from "@/components/ui";
-import { baseStatuses, isAccepted, lastNights, listRuns, needsYou, taskStats, VERDICT_TEXT, type BaseStatus, type RunSummary } from "@/lib/runs";
+import { ReviewQueue, type QueueItem } from "@/components/ReviewQueue";
+import { ErrorPanel, formatNight, Header, runLabel, SectionTitle, TaskTag, timeAgo, VERDICT_DOT, VerdictPill } from "@/components/ui";
+import { baseStatuses, isAccepted, isOpen, lastNights, listRuns, needsYou, taskStats, VERDICT_TEXT, type BaseStatus, type RunSummary } from "@/lib/runs";
 import { requireViewer } from "@/lib/session";
+import { describeSchedule, type FactoryTask } from "@/lib/tasks";
+import { workerConfigured } from "@/lib/worker";
 
 export const dynamic = "force-dynamic";
 
-const runHref = (r: RunSummary) => `/runs/${r.task.id}/${r.date}`;
+const runHref = (r: RunSummary) => `/runs/${r.task.id}/${r.id}`;
 
 export default async function Overview({ searchParams }: { searchParams: Promise<{ task?: string; show?: string }> }) {
   const viewer = await requireViewer();
   const { task: taskFilter, show } = await searchParams;
 
   let runs: RunSummary[];
+  let tasks: FactoryTask[];
   let bases: Record<string, BaseStatus>;
   try {
-    [runs, bases] = await Promise.all([listRuns(viewer.token), baseStatuses(viewer.token)]);
+    ({ runs, tasks } = await listRuns(viewer.token));
+    bases = await baseStatuses(tasks, viewer.token);
   } catch (e) {
     return (
       <>
@@ -28,75 +33,79 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   }
 
   const nights = lastNights(factory.nights);
-  const stats = taskStats(runs, nights);
+  // Tasks first, then any task that only exists in old runs.
+  const shownTasks = [...tasks, ...[...new Map(runs.filter((r) => !tasks.some((t) => t.id === r.task.id)).map((r) => [r.task.id, r.task])).values()]];
+  const stats = taskStats(shownTasks, runs, nights);
   const queue = runs.filter((r) => needsYou(r.verdict));
+  const running = runs.filter((r) => r.verdict === "running");
   const waiting = runs.filter((r) => r.verdict === "changes");
   const decided = runs.filter((r) => isAccepted(r.verdict) || r.verdict === "rejected");
   const accepted = runs.filter((r) => isAccepted(r.verdict));
-  const withPr = runs.filter((r) => r.pr);
   const missed = stats.reduce((n, s) => n + s.missed, 0);
 
-  const listed = runs.filter((r) => (!taskFilter || r.task.id === taskFilter) && (show !== "open" || !(isAccepted(r.verdict) || r.verdict === "rejected")));
+  const queueItems: QueueItem[] = queue.map((r) => ({
+    key: `${r.task.id}/${r.id}`,
+    href: runHref(r),
+    task: r.task.label,
+    night: r.id.slice(5),
+    title: r.title,
+    summary: r.summary,
+    verdict: r.verdict as QueueItem["verdict"],
+    pr: r.pr?.number ?? null,
+  }));
+
+  const listed = runs.filter((r) => (!taskFilter || r.task.id === taskFilter) && (show !== "open" || isOpen(r.verdict)));
+  const noWorker = !workerConfigured();
+  const anyEnabled = tasks.some((t) => t.enabled);
 
   return (
     <>
       <Header viewer={viewer} />
-      <main className="mx-auto max-w-6xl space-y-12 px-5 py-8">
-        <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line md:grid-cols-4">
-          <Kpi label="Needs your review" value={queue.length} tone={queue.length ? "warn" : "ink"} />
+      <main className="mx-auto max-w-6xl space-y-10 px-5 py-8">
+        {(noWorker || !anyEnabled) && (
+          <div className="rounded-xl border border-info/30 bg-info/5 px-5 py-3 text-sm text-ink-2">
+            {noWorker
+              ? "The worker routine isn't connected yet, so Run now, Build and Open PR are off and the factory's schedule is idle. Add FACTORY_ROUTINE_ID and FACTORY_ROUTINE_TOKEN in Vercel."
+              : "All tasks are paused here. Turn them on under Tasks once the claude.ai scheduled tasks are off, so nothing runs twice."}
+          </div>
+        )}
+
+        <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line md:grid-cols-5">
+          <Kpi label="Needs you" value={queue.length} tone={queue.length ? "warn" : "ink"} />
+          <Kpi label="Running" value={running.length} tone={running.length ? "info" : "ink"} />
           <Kpi label="Waiting on a run" value={waiting.length} hint="Changes requested" />
           <Kpi
             label="Accepted"
-            value={`${accepted.length}/${withPr.length}`}
+            value={`${accepted.length}/${runs.length}`}
             hint={decided.length ? `${Math.round((accepted.length / decided.length) * 100)}% of decided runs` : "Nothing decided yet"}
             tone="ok"
           />
-          <Kpi label={`Missed nights · last ${factory.nights}`} value={missed} hint="No PR opened" tone={missed ? "bad" : "ink"} />
+          <Kpi label={`Missed · last ${factory.nights}`} value={missed} hint="Nights with no run" tone={missed ? "bad" : "ink"} />
         </section>
 
         <section>
-          <SectionTitle right={<span className="text-xs text-ink-3">{queue.length ? `${queue.length} waiting` : ""}</span>}>Needs your review</SectionTitle>
-          {queue.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-line px-5 py-8 text-center text-sm text-ink-3">Nothing is waiting on you.</p>
-          ) : (
-            <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel">
-              {queue.map((r) => (
-                <li key={r.branch}>
-                  <Link href={runHref(r)} className="group flex flex-col gap-2 px-5 py-4 hover:bg-panel-2 md:flex-row md:items-start md:gap-5">
-                    <div className="flex w-56 shrink-0 items-center gap-2 md:pt-0.5">
-                      <TaskTag label={r.task.label} />
-                      <span className="whitespace-nowrap text-xs text-ink-3">{formatNight(r.date)}</span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium group-hover:text-white">{r.title}</p>
-                      {r.summary && <p className="mt-1 line-clamp-2 text-sm text-ink-2">{r.summary}</p>}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                      {r.pr && <span className="font-mono text-xs text-ink-3">#{r.pr.number}</span>}
-                      <VerdictPill verdict={r.verdict} />
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+          <SectionTitle>Needs your review</SectionTitle>
+          <ReviewQueue items={queueItems} />
         </section>
 
         <section>
-          <SectionTitle>Tasks</SectionTitle>
+          <SectionTitle right={<Link href="/tasks" className="text-xs text-ink-3 hover:text-ink">Manage tasks →</Link>}>Tasks</SectionTitle>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {stats.map((s) => {
               const total = Math.max(1, s.runs);
+              const base = bases[s.task.id];
               return (
-                <div key={s.task.id} className="flex flex-col rounded-xl border border-line bg-panel p-5 hover:border-line-strong">
-                  <div className="flex items-baseline justify-between">
+                <div key={s.task.id} className="flex flex-col rounded-xl border border-line bg-panel p-5">
+                  <div className="flex items-baseline justify-between gap-2">
                     <Link href={`/?task=${s.task.id}#runs`} className="font-medium hover:underline">
                       {s.task.label}
                     </Link>
-                    <p className="font-mono text-[11px] text-ink-3">{s.task.schedule}</p>
+                    <span className={`whitespace-nowrap font-mono text-[11px] ${s.task.enabled ? "text-ink-3" : "text-warn"}`}>
+                      {s.task.enabled ? describeSchedule(s.task).replace("Daily at ", "") : "Paused"}
+                    </span>
                   </div>
-                  <p className="mt-1 line-clamp-2 min-h-10 text-xs text-ink-3">{s.task.blurb}</p>
-                  <p className="mt-4 font-mono text-2xl tabular-nums">
+                  <p className="mt-1 line-clamp-2 min-h-8 text-xs text-ink-3">{s.task.blurb}</p>
+                  <p className="mt-3 font-mono text-2xl tabular-nums">
                     {s.accepted}
                     <span className="text-ink-3">/{s.runs}</span>
                   </p>
@@ -111,7 +120,22 @@ export default async function Overview({ searchParams }: { searchParams: Promise
                     <Mini label="Rejected" value={s.rejected} />
                     <Mini label="Missed" value={s.missed} bad={s.missed > 0} />
                   </dl>
-                  <BaseLine branch={s.task.baseBranch} status={bases[s.task.id]} />
+                  <div className="mt-auto border-t border-line pt-3 text-xs">
+                    <p className="truncate font-mono text-[11px] text-ink-2">{s.task.baseBranch}</p>
+                    {base ? (
+                      <a href={base.url} target="_blank" rel="noreferrer" className="mt-0.5 block text-ink-3 hover:text-ink">
+                        {base.ahead === 0 && base.behind === 0 ? (
+                          "Same as main"
+                        ) : (
+                          <>
+                            <span className={base.ahead ? "text-ok" : ""}>{base.ahead} ahead</span>, <span className={base.behind ? "text-warn" : ""}>{base.behind} behind</span> main ↗
+                          </>
+                        )}
+                      </a>
+                    ) : (
+                      <p className="mt-0.5 text-bad">Branch not found</p>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -122,7 +146,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <SectionTitle
             right={
               <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-[11px] text-ink-3">
-                {(["needs-review", "changes", "accepted", "rejected", "no-pr"] as const).map((v) => (
+                {(["needs-review", "unopened", "plan", "changes", "accepted", "rejected"] as const).map((v) => (
                   <span key={v} className="flex items-center gap-1.5">
                     <span className={`size-2 rounded-sm ${VERDICT_DOT[v]}`} />
                     {VERDICT_TEXT[v]}
@@ -146,21 +170,24 @@ export default async function Overview({ searchParams }: { searchParams: Promise
                 </tr>
               </thead>
               <tbody>
-                {factory.tasks.map((t) => (
+                {shownTasks.map((t) => (
                   <tr key={t.id}>
                     <td className="whitespace-nowrap pr-3 text-xs text-ink-2">{t.label}</td>
                     {[...nights].reverse().map((d) => {
-                      const r = runs.find((x) => x.task.id === t.id && x.date === d);
+                      const dayRuns = runs.filter((x) => x.task.id === t.id && x.date === d);
+                      const r = dayRuns.find((x) => x.id === d) ?? dayRuns[0];
                       return (
                         <td key={d} className="p-0">
                           {r ? (
                             <Link
                               href={runHref(r)}
-                              title={`${r.title} · ${VERDICT_TEXT[r.verdict]}`}
-                              className={`block h-7 min-w-7 rounded-md ${VERDICT_DOT[r.verdict]} opacity-80 hover:opacity-100 hover:ring-2 hover:ring-ink/40`}
-                            />
+                              title={`${r.title} · ${VERDICT_TEXT[r.verdict]}${dayRuns.length > 1 ? ` (+${dayRuns.length - 1} more that day)` : ""}`}
+                              className={`relative block h-7 min-w-7 rounded-md ${VERDICT_DOT[r.verdict]} opacity-85 hover:opacity-100 hover:ring-2 hover:ring-ink/40`}
+                            >
+                              {dayRuns.length > 1 && <span className="absolute right-0.5 top-0 font-mono text-[9px] text-bg">+{dayRuns.length - 1}</span>}
+                            </Link>
                           ) : (
-                            <span title="No PR" className="block h-7 min-w-7 rounded-md border border-dashed border-line" />
+                            <span title="No run" className="block h-7 min-w-7 rounded-md border border-dashed border-line" />
                           )}
                         </td>
                       );
@@ -176,9 +203,13 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <SectionTitle
             right={
               <div className="flex flex-wrap gap-1 text-xs">
-                <Filter href="/#runs" active={!taskFilter && show !== "open"}>All</Filter>
-                <Filter href={`/?${taskFilter ? `task=${taskFilter}&` : ""}show=open#runs`} active={show === "open"}>Open only</Filter>
-                {factory.tasks.map((t) => (
+                <Filter href="/#runs" active={!taskFilter && show !== "open"}>
+                  All
+                </Filter>
+                <Filter href={`/?${taskFilter ? `task=${taskFilter}&` : ""}show=open#runs`} active={show === "open"}>
+                  Open only
+                </Filter>
+                {shownTasks.map((t) => (
                   <Filter key={t.id} href={`/?task=${t.id}${show ? `&show=${show}` : ""}#runs`} active={taskFilter === t.id}>
                     {t.label}
                   </Filter>
@@ -191,9 +222,9 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel">
             {listed.length === 0 && <li className="px-5 py-6 text-sm text-ink-3">No runs match.</li>}
             {listed.map((r) => (
-              <li key={r.branch}>
-                <Link href={runHref(r)} className="flex items-center gap-4 px-5 py-3 text-sm hover:bg-panel-2">
-                  <span className="w-20 shrink-0 font-mono text-xs text-ink-3">{r.date.slice(5)}</span>
+              <li key={`${r.task.id}/${r.id}`}>
+                <Link href={runHref(r)} className="flex items-center gap-4 px-5 py-2.5 text-sm hover:bg-panel-2">
+                  <span className="w-28 shrink-0 font-mono text-xs text-ink-3">{r.id === r.date ? formatNight(r.id) : runLabel(r.id)}</span>
                   <span className="hidden w-36 shrink-0 sm:block">
                     <TaskTag label={r.task.label} />
                   </span>
@@ -210,34 +241,13 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   );
 }
 
-function Kpi({ label, value, hint, tone = "ink" }: { label: string; value: number | string; hint?: string; tone?: "ink" | "ok" | "warn" | "bad" }) {
-  const color = { ink: "text-ink", ok: "text-ok", warn: "text-warn", bad: "text-bad" }[tone];
+function Kpi({ label, value, hint, tone = "ink" }: { label: string; value: number | string; hint?: string; tone?: "ink" | "ok" | "warn" | "bad" | "info" }) {
+  const color = { ink: "text-ink", ok: "text-ok", warn: "text-warn", bad: "text-bad", info: "text-info" }[tone];
   return (
-    <div className="bg-panel p-5">
+    <div className="bg-panel p-4">
       <p className="text-xs text-ink-3">{label}</p>
-      <p className={`mt-2 font-mono text-3xl tabular-nums ${color}`}>{value}</p>
-      {hint && <p className="mt-1 text-xs text-ink-3">{hint}</p>}
-    </div>
-  );
-}
-
-function BaseLine({ branch, status }: { branch: string; status: BaseStatus | undefined }) {
-  return (
-    <div className="mt-auto border-t border-line pt-3 text-xs">
-      <p className="truncate font-mono text-[11px] text-ink-2">{branch}</p>
-      {status ? (
-        <a href={status.url} target="_blank" rel="noreferrer" className="mt-0.5 block text-ink-3 hover:text-ink">
-          {status.ahead === 0 && status.behind === 0 ? (
-            "Same as main"
-          ) : (
-            <>
-              <span className={status.ahead ? "text-ok" : ""}>{status.ahead} ahead</span>, <span className={status.behind ? "text-warn" : ""}>{status.behind} behind</span> main ↗
-            </>
-          )}
-        </a>
-      ) : (
-        <p className="mt-0.5 text-bad">Branch not found</p>
-      )}
+      <p className={`mt-1.5 font-mono text-2xl tabular-nums ${color}`}>{value}</p>
+      {hint && <p className="mt-0.5 text-[11px] text-ink-3">{hint}</p>}
     </div>
   );
 }

@@ -22,7 +22,24 @@ export type RunManifest = {
   version: 1;
   task: string;
   date: string;
+  // The run's folder name: the date, or date-suffix for extra runs that day (e.g. 2026-11-14-step2).
+  id: string;
   branch: string;
+  // "running" while the worker is on it (the factory writes this when it starts a run).
+  status?: "running" | "done";
+  // "plan" when the run only planned and wrote no code.
+  kind?: "change" | "plan";
+  // The plan itself, markdown, for a plan-only run.
+  plan?: string;
+  // The run's commits as a git patch, relative to the run folder (for runs that couldn't open a PR).
+  patch?: string;
+  // Where an older run's patch and write-up are kept, when they aren't on the branch.
+  patchSource?: string;
+  reportSource?: string;
+  // Set when a reviewer dismissed an unopened run.
+  dismissed?: { by: string; at: string; reason?: string };
+  // What started the run.
+  origin?: { kind: "schedule" | "manual" | "build-step" | "open-pr" | "feedback"; by?: string; from?: string };
   pr?: number | null;
   title: string;
   summary: string;
@@ -100,10 +117,21 @@ export function parseManifest(raw: unknown): RunManifest | null {
       })
     : undefined;
 
+  const o = m.origin as RunManifest["origin"] | undefined;
+  const dis = m.dismissed as RunManifest["dismissed"] | undefined;
   return {
     version: 1,
     task: m.task,
     date: m.date,
+    id: str(m.id) ? m.id : m.date,
+    status: m.status === "running" ? "running" : m.status === "done" ? "done" : undefined,
+    kind: m.kind === "plan" ? "plan" : "change",
+    plan: str(m.plan) ? m.plan : undefined,
+    patch: str(m.patch) ? m.patch : undefined,
+    patchSource: str(m.patchSource) ? m.patchSource : undefined,
+    reportSource: str(m.reportSource) ? m.reportSource : undefined,
+    dismissed: dis && typeof dis === "object" && str(dis.by) ? dis : undefined,
+    origin: o && typeof o === "object" && str(o.kind) ? o : undefined,
     branch: str(m.branch) ? m.branch : "",
     pr: typeof m.pr === "number" ? m.pr : null,
     title: m.title,
@@ -121,6 +149,6 @@ export function parseManifest(raw: unknown): RunManifest | null {
   };
 }
 
-export function manifestDir(task: string, date: string) {
-  return `runs/${task}/${date}`;
+export function manifestDir(task: string, id: string) {
+  return `runs/${task}/${id}`;
 }

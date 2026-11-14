@@ -1,8 +1,11 @@
-import { factory, LABELS, type TaskConfig } from "@/factory.config";
-import { GitHubError, ghGet, pool, repoPath } from "@/lib/github";
-import { manifestDir, parseManifest, type RunManifest } from "@/lib/manifest";
+import { factory, LABELS } from "@/factory.config";
+import { botReports, type BotReport } from "@/lib/bots";
+import { fromGitHubFiles, parsePatchFile, type DiffFile } from "@/lib/diff";
 import { FEEDBACK_MARKER } from "@/lib/feedback-marker";
+import { GitHubError, ghGet, pool, repoPath } from "@/lib/github";
 import { localArtifacts } from "@/lib/local-artifacts";
+import { manifestDir, parseManifest, type RunManifest } from "@/lib/manifest";
+import { getTasks, pacificParts, taskOrStub, type FactoryTask } from "@/lib/tasks";
 
 // ---------- shapes from the GitHub REST API (only what we read) ----------
 
@@ -24,42 +27,45 @@ export type GhPull = {
   head: { ref: string; sha: string };
   base: { ref: string };
   mergeable?: boolean | null;
-  mergeable_state?: string;
   additions?: number;
   deletions?: number;
   changed_files?: number;
-  commits?: number;
 };
 type GhComment = { id: number; body: string; user: GhUser; created_at: string; html_url: string };
-type GhReviewComment = GhComment & { path: string; in_reply_to_id?: number };
+type GhReviewComment = GhComment & { path: string; in_reply_to_id?: number; pull_request_review_id: number | null };
 type GhReview = { id: number; state: string; body: string; user: GhUser; submitted_at: string; html_url: string };
-type GhCheckRun = { name: string; status: string; conclusion: string | null; html_url: string; started_at: string | null; completed_at: string | null };
-type GhFile = { filename: string; status: string; additions: number; deletions: number; blob_url: string };
+type GhCheckRun = { name: string; status: string; conclusion: string | null; html_url: string };
+type GhFile = { filename: string; previous_filename?: string; status: string; additions: number; deletions: number; patch?: string; blob_url: string };
 type GhCommit = { sha: string; html_url: string; commit: { message: string; committer: { date: string } } };
-type GhDeployment = { id: number; environment: string; sha: string; created_at: string };
-type GhDeploymentStatus = { state: string; environment_url?: string; target_url?: string; created_at: string };
-type GhTree = { tree: { path: string; type: string }[]; truncated: boolean };
+type GhDeployment = { id: number; environment: string };
+type GhDeploymentStatus = { state: string; environment_url?: string; target_url?: string };
+type GhTree = { tree: { path: string; type: string; sha: string }[] };
 
 // ---------- the factory's view ----------
 
-export type Verdict = "needs-review" | "revised" | "changes" | "accepted" | "merged" | "rejected" | "no-pr";
+export type Verdict = "needs-review" | "revised" | "changes" | "unopened" | "plan" | "running" | "accepted" | "merged" | "rejected" | "no-pr";
 
 export const VERDICT_TEXT: Record<Verdict, string> = {
   "needs-review": "Needs review",
   revised: "Revised, needs review",
   changes: "Waiting on the run",
+  unopened: "Unopened PR",
+  plan: "Plan only",
+  running: "Running",
   accepted: "Accepted",
   merged: "Merged",
   rejected: "Rejected",
-  "no-pr": "No PR opened",
+  "no-pr": "No PR",
 };
 
-export const needsYou = (v: Verdict) => v === "needs-review" || v === "revised";
+export const needsYou = (v: Verdict) => v === "needs-review" || v === "revised" || v === "unopened" || v === "plan";
 export const isAccepted = (v: Verdict) => v === "accepted" || v === "merged";
+export const isOpen = (v: Verdict) => v === "needs-review" || v === "revised" || v === "changes" || v === "unopened" || v === "plan" || v === "running";
 
 export type RunSummary = {
-  task: TaskConfig;
+  task: FactoryTask;
   date: string;
+  id: string; // folder and URL segment: the date, or date-suffix
   branch: string;
   title: string;
   summary: string;
@@ -68,49 +74,49 @@ export type RunSummary = {
   hasManifest: boolean;
 };
 
-const BRANCH_RE = /^(.*-)(\d{4}-\d{2}-\d{2})$/;
+const BRANCH_RE = /^nightly\/([a-z0-9-]+?)-(\d{4}-\d{2}-\d{2})(?:-([a-z0-9][a-z0-9-]*))?$/;
+const RUN_ID_RE = /^\d{4}-\d{2}-\d{2}(?:-[a-z0-9][a-z0-9-]*)?$/;
 
-export function parseBranch(ref: string): { task: TaskConfig; date: string } | null {
+export function parseBranch(ref: string): { taskId: string; date: string; id: string } | null {
   const m = BRANCH_RE.exec(ref);
   if (!m) return null;
-  const task = factory.tasks.find((t) => t.branchPrefix === m[1]);
-  return task ? { task, date: m[2] } : null;
+  return { taskId: m[1], date: m[2], id: m[3] ? `${m[2]}-${m[3]}` : m[2] };
 }
 
-export const taskById = (id: string) => factory.tasks.find((t) => t.id === id) ?? null;
-export const branchFor = (task: TaskConfig, date: string) => `${task.branchPrefix}${date}`;
-
-// "2026-11-14" in Pacific time, for the night grid.
-export function pacificDate(d = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
-}
+export const branchFor = (taskId: string, id: string) => `nightly/${taskId}-${id}`;
+export const isRunId = (id: string) => RUN_ID_RE.test(id);
 
 export function lastNights(n: number, from = new Date()) {
   const out: string[] = [];
-  const [y, m, d] = pacificDate(from).split("-").map(Number);
-  for (let i = 0; i < n; i++) {
-    const day = new Date(Date.UTC(y, m - 1, d - i));
-    out.push(day.toISOString().slice(0, 10));
-  }
+  const [y, m, d] = pacificParts(from).date.split("-").map(Number);
+  for (let i = 0; i < n; i++) out.push(new Date(Date.UTC(y, m - 1, d - i)).toISOString().slice(0, 10));
   return out;
 }
 
 const hasLabel = (pr: GhPull, name: string) => pr.labels.some((l) => l.name === name);
 
-// The plain-language summary when a run didn't write one: the PR body's first real paragraph.
 export function summaryFromBody(body: string | null): string {
   if (!body) return "";
   const paras = body
     .replace(/<!--[\s\S]*?-->/g, "")
     .split(/\n\s*\n/)
     .map((p) => p.trim())
-    .filter((p) => p && !p.startsWith("#") && !p.startsWith("```") && !/^From the nightly\//.test(p) && !/^\*\*Needs a rebase/.test(p) && !/^Applies cleanly/.test(p));
-  const first = paras[0] ?? "";
-  const flat = first.replace(/\s+/g, " ");
+    .filter(
+      (p) =>
+        p &&
+        !p.startsWith("#") &&
+        !p.startsWith("```") &&
+        !/^From the nightly\//.test(p) &&
+        !/^\*\*Needs a rebase/.test(p) &&
+        !/^Applies cleanly/.test(p),
+    );
+  const flat = (paras[0] ?? "").replace(/\s+/g, " ");
   return flat.length > 320 ? `${flat.slice(0, 317)}…` : flat;
 }
 
-function verdictFromLabels(pr: GhPull): Verdict {
+export const stripTitle = (t: string) => t.replace(/^\[nightly\/[^\]]+\]\s*/, "");
+
+function verdictFromPr(pr: GhPull): Verdict {
   if (pr.merged_at) return "merged";
   if (pr.state === "closed") return "rejected";
   if (hasLabel(pr, LABELS.accepted)) return "accepted";
@@ -119,18 +125,22 @@ function verdictFromLabels(pr: GhPull): Verdict {
   return "needs-review";
 }
 
-// "Changes requested" turns into "Revised" once the run has pushed after the request.
+function verdictFromManifest(m: RunManifest | null): Verdict {
+  if (!m) return "no-pr";
+  if (m.dismissed) return "rejected";
+  if (m.status === "running") return "running";
+  if (m.kind === "plan") return "plan";
+  if (m.patch || m.patchSource) return "unopened";
+  return "no-pr";
+}
+
 async function refineChanges(pr: GhPull, token?: string): Promise<Verdict> {
   try {
     const [comments, commit] = await Promise.all([
       ghGet<GhComment[]>(`${repoPath()}/issues/${pr.number}/comments?per_page=100`, token),
       ghGet<GhCommit>(`${repoPath()}/commits/${pr.head.sha}`, token),
     ]);
-    const lastAsk = comments
-      .filter((c) => c.body.includes(FEEDBACK_MARKER.changes))
-      .map((c) => c.created_at)
-      .sort()
-      .at(-1);
+    const lastAsk = comments.filter((c) => c.body.includes(FEEDBACK_MARKER.changes)).map((c) => c.created_at).sort().at(-1);
     if (lastAsk && commit.commit.committer.date > lastAsk) return "revised";
   } catch {}
   return "changes";
@@ -140,90 +150,117 @@ async function listNightlyPulls(token?: string): Promise<GhPull[]> {
   const since = process.env.FACTORY_SINCE ?? "2026-11-01";
   const out: GhPull[] = [];
   for (let page = 1; page <= 15; page++) {
-    const batch = await ghGet<GhPull[]>(
-      `${repoPath()}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`,
-      token,
-    );
+    const batch = await ghGet<GhPull[]>(`${repoPath()}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`, token);
     for (const pr of batch) if (parseBranch(pr.head.ref)) out.push(pr);
-    const oldest = batch.at(-1)?.created_at ?? "";
-    if (batch.length < 100 || oldest < since) break;
+    if (batch.length < 100 || (batch.at(-1)?.created_at ?? "") < since) break;
   }
   return out;
 }
 
-// Run folders on the artifacts branch: "task/date" -> true
-async function listManifests(token?: string): Promise<Set<string>> {
+// ---------- the artifacts branch ----------
+
+// Blobs never change, so their contents are cached for the life of the server.
+const blobCache = new Map<string, string>();
+
+async function readBlob(sha: string, token?: string): Promise<string> {
+  const hit = blobCache.get(sha);
+  if (hit !== undefined) return hit;
+  const text = await ghGet<string>(`${repoPath()}/git/blobs/${sha}`, token, { raw: true });
+  blobCache.set(sha, text);
+  return text;
+}
+
+// "task/id" -> blob sha of its run.json
+async function listManifests(token?: string): Promise<Map<string, string>> {
   const local = await localArtifacts();
-  if (local) return local.list();
+  if (local) return new Map([...(await local.list())].map((k) => [k, `local:${k}`]));
   try {
     const tree = await ghGet<GhTree>(`${repoPath()}/git/trees/${factory.artifactsBranch}?recursive=1`, token);
-    const keys = tree.tree
-      .filter((t) => t.type === "blob" && /^runs\/[^/]+\/\d{4}-\d{2}-\d{2}\/run\.json$/.test(t.path))
-      .map((t) => t.path.split("/").slice(1, 3).join("/"));
-    return new Set(keys);
+    const out = new Map<string, string>();
+    for (const t of tree.tree) {
+      const m = /^runs\/([a-z0-9-]+)\/([^/]+)\/run\.json$/.exec(t.path);
+      if (t.type === "blob" && m && isRunId(m[2])) out.set(`${m[1]}/${m[2]}`, t.sha);
+    }
+    return out;
   } catch (e) {
-    if (e instanceof GitHubError && (e.status === 404 || e.status === 409)) return new Set();
+    if (e instanceof GitHubError && (e.status === 404 || e.status === 409)) return new Map();
     throw e;
   }
 }
 
-export async function getManifest(task: string, date: string, token?: string): Promise<RunManifest | null> {
-  const local = await localArtifacts();
-  if (local) return local.manifest(task, date);
+async function manifestFromSha(key: string, sha: string, token?: string): Promise<RunManifest | null> {
   try {
-    const raw = await ghGet<string>(
-      `${repoPath()}/contents/${manifestDir(task, date)}/run.json?ref=${factory.artifactsBranch}`,
-      token,
-      { raw: true },
-    );
-    return parseManifest(JSON.parse(raw));
+    if (sha.startsWith("local:")) {
+      const [task, id] = key.split("/");
+      return (await localArtifacts())!.manifest(task, id);
+    }
+    return parseManifest(JSON.parse(await readBlob(sha, token)));
   } catch {
     return null;
   }
 }
 
-export async function listRuns(token?: string): Promise<RunSummary[]> {
-  const [pulls, manifests] = await Promise.all([listNightlyPulls(token), listManifests(token)]);
+export async function readArtifact(path: string, token?: string): Promise<string | null> {
+  const local = await localArtifacts();
+  if (local) return (await local.file(path))?.toString("utf8") ?? null;
+  try {
+    return await ghGet<string>(`${repoPath()}/contents/${path}?ref=${factory.artifactsBranch}`, token, { raw: true });
+  } catch {
+    return null;
+  }
+}
 
-  // One run per task and night. If a night has several PRs, the newest wins.
+export async function getManifest(task: string, id: string, token?: string): Promise<RunManifest | null> {
+  const local = await localArtifacts();
+  if (local) return local.manifest(task, id);
+  const raw = await readArtifact(`${manifestDir(task, id)}/run.json`, token);
+  try {
+    return raw ? parseManifest(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- all runs ----------
+
+export async function listRuns(token?: string): Promise<{ runs: RunSummary[]; tasks: FactoryTask[] }> {
+  const [pulls, manifests, tasks] = await Promise.all([listNightlyPulls(token), listManifests(token), getTasks(token)]);
+
   const byKey = new Map<string, GhPull>();
   for (const pr of pulls) {
     const p = parseBranch(pr.head.ref)!;
-    const key = `${p.task.id}/${p.date}`;
+    const key = `${p.taskId}/${p.id}`;
     const prev = byKey.get(key);
     if (!prev || prev.created_at < pr.created_at) byKey.set(key, pr);
   }
 
-  const keys = new Set([...byKey.keys(), ...manifests]);
-  const runs = await pool([...keys], 8, async (key): Promise<RunSummary | null> => {
-    const [taskId, date] = key.split("/");
-    const task = taskById(taskId);
-    if (!task) return null;
+  const keys = new Set([...byKey.keys(), ...manifests.keys()]);
+  const runs = await pool([...keys], 8, async (key): Promise<RunSummary> => {
+    const [taskId, id] = key.split("/");
+    const task = taskOrStub(tasks, taskId);
     const pr = byKey.get(key) ?? null;
-    const hasManifest = manifests.has(key);
-
-    let verdict: Verdict = pr ? verdictFromLabels(pr) : "no-pr";
+    const sha = manifests.get(key);
+    // Without a PR the manifest decides everything; with one, it's only read for the summary.
+    const manifest = sha ? await manifestFromSha(key, sha, token) : null;
+    let verdict: Verdict = pr ? verdictFromPr(pr) : verdictFromManifest(manifest);
     if (pr && verdict === "changes") verdict = await refineChanges(pr, token);
-
-    // Fetch the run's own summary only where someone will read it.
-    const manifest = hasManifest && (needsYou(verdict) || !pr) ? await getManifest(taskId, date, token) : null;
-
+    if (pr && manifest?.status === "running") verdict = "running";
     return {
       task,
-      date,
-      branch: branchFor(task, date),
-      title: stripTitle(manifest?.title ?? pr?.title ?? "Run didn't open a PR"),
+      date: id.slice(0, 10),
+      id,
+      branch: branchFor(taskId, id),
+      title: stripTitle(manifest?.title ?? pr?.title ?? "Run didn't report"),
       summary: manifest?.summary || summaryFromBody(pr?.body ?? null),
       verdict,
       pr,
-      hasManifest,
+      hasManifest: !!manifest,
     };
   });
 
-  return runs.filter((r): r is RunSummary => r !== null).sort((a, b) => (a.date === b.date ? a.task.id.localeCompare(b.task.id) : b.date.localeCompare(a.date)));
+  runs.sort((a, b) => (a.id === b.id ? a.task.id.localeCompare(b.task.id) : b.id.localeCompare(a.id)));
+  return { runs, tasks };
 }
-
-export const stripTitle = (t: string) => t.replace(/^\[nightly\/[^\]]+\]\s*/, "");
 
 // ---------- one run, in full ----------
 
@@ -241,10 +278,12 @@ export type FeedbackItem = {
 
 export type RunDetail = RunSummary & {
   manifest: RunManifest | null;
-  files: GhFile[];
+  diff: DiffFile[];
+  diffSource: "pr" | "patch" | null;
   checks: GhCheckRun[];
   commits: GhCommit[];
   feedback: FeedbackItem[];
+  bots: BotReport[];
   previewUrl: string | null;
   sessionUrl: string | null;
 };
@@ -273,40 +312,41 @@ async function previewFor(sha: string, token?: string): Promise<string | null> {
 
 const SESSION_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/;
 
-export async function getRun(taskId: string, date: string, token?: string): Promise<RunDetail | null> {
-  const task = taskById(taskId);
-  if (!task || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  const branch = branchFor(task, date);
+export async function getRun(taskId: string, id: string, token?: string): Promise<{ run: RunDetail; tasks: FactoryTask[] } | null> {
+  if (!/^[a-z0-9-]+$/.test(taskId) || !isRunId(id)) return null;
+  const tasks = await getTasks(token);
+  const task = taskOrStub(tasks, taskId);
+  const branch = branchFor(taskId, id);
   const { owner } = factory.repo;
 
   const [pulls, manifest] = await Promise.all([
     ghGet<GhPull[]>(`${repoPath()}/pulls?state=all&head=${owner}:${encodeURIComponent(branch)}`, token, { fresh: true }),
-    getManifest(task.id, date, token),
+    getManifest(taskId, id, token),
   ]);
   const listed = pulls.sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
   if (!listed && !manifest) return null;
 
-  const empty: Omit<RunDetail, keyof RunSummary> = {
-    manifest,
-    files: [],
-    checks: [],
-    commits: [],
-    feedback: [],
-    previewUrl: manifest?.previewUrl ?? null,
-    sessionUrl: manifest?.session ?? null,
-  };
+  const base = { task, date: id.slice(0, 10), id, branch, hasManifest: !!manifest, manifest };
 
   if (!listed) {
+    const patchText = manifest?.patch ? await readArtifact(`${manifestDir(taskId, id)}/${manifest.patch}`, token) : null;
     return {
-      task,
-      date,
-      branch,
-      title: stripTitle(manifest!.title),
-      summary: manifest!.summary,
-      verdict: "no-pr",
-      pr: null,
-      hasManifest: true,
-      ...empty,
+      tasks,
+      run: {
+        ...base,
+        title: stripTitle(manifest!.title),
+        summary: manifest!.summary,
+        verdict: verdictFromManifest(manifest),
+        pr: null,
+        diff: patchText ? parsePatchFile(patchText) : [],
+        diffSource: patchText ? "patch" : null,
+        checks: [],
+        commits: [],
+        feedback: [],
+        bots: [],
+        previewUrl: manifest?.previewUrl ?? null,
+        sessionUrl: manifest?.session ?? null,
+      },
     };
   }
 
@@ -321,12 +361,13 @@ export async function getRun(taskId: string, date: string, token?: string): Prom
     ghGet<GhCommit[]>(`${repoPath()}/pulls/${n}/commits?per_page=100`, token),
   ]);
 
-  let verdict = verdictFromLabels(pr);
+  let verdict = verdictFromPr(pr);
   if (verdict === "changes") {
     const lastAsk = comments.filter((c) => c.body.includes(FEEDBACK_MARKER.changes)).map((c) => c.created_at).sort().at(-1);
     const lastPush = commits.map((c) => c.commit.committer.date).sort().at(-1);
     if (lastAsk && lastPush && lastPush > lastAsk) verdict = "revised";
   }
+  if (manifest?.status === "running") verdict = "running";
 
   const feedback: FeedbackItem[] = [
     ...comments.map((c) => ({ id: `c${c.id}`, who: c.user, when: c.created_at, body: c.body, url: c.html_url, kind: "comment" as const, bot: isBot(c.user), verdict: verdictOf(c.body) })),
@@ -340,21 +381,22 @@ export async function getRun(taskId: string, date: string, token?: string): Prom
     manifest?.session ?? commits.map((c) => SESSION_RE.exec(c.commit.message)?.[0]).find(Boolean) ?? SESSION_RE.exec(pr.body ?? "")?.[0] ?? null;
 
   return {
-    task,
-    date,
-    branch,
-    title: stripTitle(manifest?.title ?? pr.title),
-    summary: manifest?.summary || summaryFromBody(pr.body),
-    verdict,
-    pr,
-    hasManifest: !!manifest,
-    manifest,
-    files,
-    checks: checks.filter((c) => c.conclusion !== "skipped"),
-    commits,
-    feedback,
-    previewUrl: manifest?.previewUrl ?? (await previewFor(pr.head.sha, token)),
-    sessionUrl,
+    tasks,
+    run: {
+      ...base,
+      title: stripTitle(manifest?.title ?? pr.title),
+      summary: manifest?.summary || summaryFromBody(pr.body),
+      verdict,
+      pr,
+      diff: fromGitHubFiles(files),
+      diffSource: "pr",
+      checks: checks.filter((c) => c.conclusion !== "skipped"),
+      commits,
+      feedback,
+      bots: botReports(reviews, inline, comments),
+      previewUrl: manifest?.previewUrl ?? (await previewFor(pr.head.sha, token)),
+      sessionUrl,
+    },
   };
 }
 
@@ -362,10 +404,10 @@ export async function getRun(taskId: string, date: string, token?: string): Prom
 
 export type BaseStatus = { ahead: number; behind: number; url: string } | null;
 
-export async function baseStatuses(token?: string): Promise<Record<string, BaseStatus>> {
+export async function baseStatuses(tasks: FactoryTask[], token?: string): Promise<Record<string, BaseStatus>> {
   const out: Record<string, BaseStatus> = {};
   await Promise.all(
-    factory.tasks.map(async (t) => {
+    tasks.map(async (t) => {
       try {
         const c = await ghGet<{ ahead_by: number; behind_by: number; html_url: string }>(
           `${repoPath()}/compare/${encodeURIComponent(factory.mainBranch)}...${encodeURIComponent(t.baseBranch)}?per_page=1`,
@@ -383,7 +425,7 @@ export async function baseStatuses(token?: string): Promise<Record<string, BaseS
 // ---------- the overview's numbers ----------
 
 export type TaskStats = {
-  task: TaskConfig;
+  task: FactoryTask;
   runs: number;
   accepted: number;
   rejected: number;
@@ -393,20 +435,21 @@ export type TaskStats = {
   last: RunSummary | null;
 };
 
-export function taskStats(runs: RunSummary[], nights: string[]): TaskStats[] {
-  return factory.tasks.map((task) => {
+export function taskStats(tasks: FactoryTask[], runs: RunSummary[], nights: string[]): TaskStats[] {
+  const today = pacificParts().date;
+  return tasks.map((task) => {
     const mine = runs.filter((r) => r.task.id === task.id);
-    const withPr = mine.filter((r) => r.pr);
     const seen = new Set(mine.map((r) => r.date));
     const first = mine.at(-1)?.date ?? "9999";
     return {
       task,
-      runs: withPr.length,
+      runs: mine.length,
       accepted: mine.filter((r) => isAccepted(r.verdict)).length,
       rejected: mine.filter((r) => r.verdict === "rejected").length,
-      open: mine.filter((r) => r.verdict === "needs-review" || r.verdict === "revised" || r.verdict === "changes").length,
+      open: mine.filter((r) => isOpen(r.verdict)).length,
       needsYou: mine.filter((r) => needsYou(r.verdict)).length,
-      missed: nights.filter((d) => d >= first && (!seen.has(d) || mine.find((r) => r.date === d)?.verdict === "no-pr")).length,
+      // Nights with no run at all, since the task's first run (not counting today).
+      missed: nights.filter((d) => d >= first && d < today && !seen.has(d)).length,
       last: mine[0] ?? null,
     };
   });

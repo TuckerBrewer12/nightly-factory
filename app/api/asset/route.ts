@@ -4,9 +4,18 @@ import { repoPath } from "@/lib/github";
 import { localArtifacts } from "@/lib/local-artifacts";
 import { getViewer } from "@/lib/session";
 
-const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+const TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  patch: "text/plain; charset=utf-8",
+  md: "text/markdown; charset=utf-8",
+  json: "application/json",
+};
 
-// Screenshots live on the artifacts branch; this serves them to signed-in viewers.
+// Screenshots and patches live on the artifacts branch; this serves them to signed-in viewers.
 export async function GET(req: NextRequest) {
   const viewer = await getViewer();
   if (!viewer) return new NextResponse("Sign in first", { status: 401 });

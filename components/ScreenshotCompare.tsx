@@ -30,7 +30,7 @@ export function ScreenshotCompare({ name, note, before, after }: { name: string;
           </div>
         )}
       </figcaption>
-      <div className="bg-[#050505] p-3">
+      <div className="bg-shot p-3">
         {mode === "side" && before ? (
           <div className="grid gap-3 md:grid-cols-2">
             <Labeled label="Before" src={before} />

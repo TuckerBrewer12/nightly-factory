@@ -1,0 +1,18 @@
+name: Factory scheduler
+# Every 30 minutes, ask the factory to start any task whose time has come.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Tick
+        env:
+          FACTORY_URL: ${{ vars.FACTORY_URL || 'https://nightly-factory.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS -X POST "$FACTORY_URL/api/cron/tick" -H "Authorization: Bearer $CRON_SECRET" | tee tick.json

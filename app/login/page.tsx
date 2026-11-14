@@ -16,7 +16,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         {message && <p className="mt-4 rounded-md border border-bad/30 bg-bad/10 px-3 py-2 text-sm text-bad">{message}</p>}
         <a
           href={`/api/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}
-          className="mt-6 flex h-10 items-center justify-center rounded-md bg-ink text-sm font-medium text-bg hover:bg-white"
+          className="mt-6 flex h-10 items-center justify-center rounded-md bg-accent text-sm font-medium text-on-accent hover:opacity-90"
         >
           Continue with GitHub
         </a>
