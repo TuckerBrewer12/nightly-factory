@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { grantTimes, type TokenGrant } from "@/lib/github-token";
 import { allowedUsers, seal, SESSION_COOKIE, SESSION_DAYS } from "@/lib/session";
 
 export async function GET(req: NextRequest) {
@@ -18,7 +19,8 @@ export async function GET(req: NextRequest) {
       redirect_uri: new URL("/api/auth/callback", req.nextUrl.origin).toString(),
     }),
   });
-  const { access_token } = (await tokenRes.json()) as { access_token?: string };
+  const grant = (await tokenRes.json()) as TokenGrant;
+  const access_token = grant.access_token;
   if (!access_token) return NextResponse.redirect(new URL("/login?error=token", req.nextUrl.origin));
 
   const userRes = await fetch("https://api.github.com/user", {
@@ -30,7 +32,7 @@ export async function GET(req: NextRequest) {
   }
 
   const exp = Date.now() + SESSION_DAYS * 86_400_000;
-  const sealed = await seal({ login: user.login, avatar: user.avatar_url ?? "", token: access_token, exp });
+  const sealed = await seal({ login: user.login, avatar: user.avatar_url ?? "", token: access_token, exp, ...grantTimes(grant) });
   const next = req.cookies.get("factory_next")?.value ?? "/";
   const res = NextResponse.redirect(new URL(next.startsWith("/") ? next : "/", req.nextUrl.origin));
   res.cookies.set(SESSION_COOKIE, sealed, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_DAYS * 86_400 });

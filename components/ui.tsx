@@ -1,3 +1,4 @@
+import { GitHubError } from "@/lib/github";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { factory } from "@/factory.config";
@@ -119,7 +120,19 @@ export function SectionTitle({ children, right }: { children: React.ReactNode; r
   );
 }
 
-export function ErrorPanel({ message }: { message: string }) {
+export function ErrorPanel({ error }: { error: unknown }) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof GitHubError && error.status === 401) {
+    return (
+      <div className="rounded-lg border border-warn/30 bg-warn/5 p-4 text-sm text-ink-2">
+        <p className="font-medium text-ink">Your GitHub sign-in has expired.</p>
+        <p className="mt-1">GitHub stopped accepting the token from when you last signed in. Signing in again takes a second.</p>
+        <a href="/api/auth/login" className="mt-3 inline-block rounded-md bg-ink px-3 py-1.5 text-xs font-medium text-bg">
+          Sign in again
+        </a>
+      </div>
+    );
+  }
   return (
     <div className="rounded-lg border border-bad/30 bg-bad/10 p-4 text-sm text-bad">
       <p className="font-medium">Couldn&apos;t load from GitHub.</p>

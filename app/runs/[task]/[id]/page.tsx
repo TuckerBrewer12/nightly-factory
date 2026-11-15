@@ -36,7 +36,7 @@ export default async function RunPage({ params, searchParams }: { params: Promis
       <>
         <Header viewer={viewer} />
         <main className="mx-auto max-w-6xl px-5 py-10">
-          <ErrorPanel message={e instanceof Error ? e.message : String(e)} />
+          <ErrorPanel error={e} />
         </main>
       </>
     );

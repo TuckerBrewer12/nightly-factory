@@ -23,7 +23,7 @@ export default async function TasksPage() {
       <>
         <Header viewer={viewer} crumbs={[{ label: "Tasks" }]} />
         <main className="mx-auto max-w-6xl px-5 py-10">
-          <ErrorPanel message={e instanceof Error ? e.message : String(e)} />
+          <ErrorPanel error={e} />
         </main>
       </>
     );
