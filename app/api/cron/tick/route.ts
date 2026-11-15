@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { scheduledAssignment } from "@/lib/assignments";
+import { serverToken } from "@/lib/github";
 import { dueTasks, loadState, pacificParts, updateState } from "@/lib/tasks";
 import { freeRunId, startRun, workerConfigured } from "@/lib/worker";
 
@@ -10,8 +11,10 @@ import { freeRunId, startRun, workerConfigured } from "@/lib/worker";
 async function tick(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const token = process.env.GITHUB_TOKEN;
+  const token = serverToken();
   if (!token) return NextResponse.json({ error: "GITHUB_TOKEN isn't set" }, { status: 500 });
+  const check = await fetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${token}`, "User-Agent": "nightly-factory" } });
+  if (check.status === 401) return NextResponse.json({ error: "GITHUB_TOKEN was rejected by GitHub (401): it's mistyped, expired or revoked." }, { status: 500 });
   if (!workerConfigured()) return NextResponse.json({ skipped: "worker routine not configured" });
 
   const { state } = await loadState(token, true);

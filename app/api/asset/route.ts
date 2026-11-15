@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { factory } from "@/factory.config";
-import { repoPath } from "@/lib/github";
+import { readToken, repoPath } from "@/lib/github";
 import { localArtifacts } from "@/lib/local-artifacts";
 import { getViewer } from "@/lib/session";
 
@@ -30,14 +30,20 @@ export async function GET(req: NextRequest) {
     return buf ? new NextResponse(new Uint8Array(buf), { headers: { "Content-Type": TYPES[ext] } }) : new NextResponse("Not found", { status: 404 });
   }
 
-  const token = process.env.GITHUB_TOKEN || viewer.token;
-  const res = await fetch(`https://api.github.com${repoPath()}/contents/${path}?ref=${factory.artifactsBranch}`, {
-    headers: {
-      Accept: "application/vnd.github.raw",
-      "User-Agent": "nightly-factory",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  let token = readToken(viewer.token);
+  const get = () =>
+    fetch(`https://api.github.com${repoPath()}/contents/${path}?ref=${factory.artifactsBranch}`, {
+      headers: {
+        Accept: "application/vnd.github.raw",
+        "User-Agent": "nightly-factory",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  let res = await get();
+  if (res.status === 401 && token !== viewer.token) {
+    token = viewer.token;
+    res = await get();
+  }
   if (!res.ok) return new NextResponse("Not found", { status: 404 });
   return new NextResponse(await res.arrayBuffer(), {
     headers: { "Content-Type": TYPES[ext], "Cache-Control": "private, max-age=86400, immutable" },

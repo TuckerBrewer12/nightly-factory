@@ -27,9 +27,23 @@ function headers(token: string | undefined, extra?: Record<string, string>) {
   return h;
 }
 
+// The server's own token (GITHUB_TOKEN), unless GitHub has already rejected it.
+// Pasted values often carry spaces, quotes or a newline, so those are stripped.
+let serverTokenRejected = false;
+
+export function serverToken(): string | undefined {
+  const raw = process.env.GITHUB_TOKEN?.trim().replace(/^["']|["']$/g, "");
+  return raw && !serverTokenRejected ? raw : undefined;
+}
+
+export function serverTokenStatus(): "ok" | "missing" | "rejected" {
+  if (!process.env.GITHUB_TOKEN?.trim()) return "missing";
+  return serverTokenRejected ? "rejected" : "ok";
+}
+
 // Reads prefer the server token (shared cache), else the viewer's.
-function readToken(viewerToken?: string) {
-  return process.env.GITHUB_TOKEN || viewerToken || undefined;
+export function readToken(viewerToken?: string) {
+  return serverToken() || viewerToken || undefined;
 }
 
 export async function ghGet<T>(path: string, viewerToken?: string, opts: { fresh?: boolean; raw?: boolean } = {}): Promise<T> {
@@ -37,10 +51,20 @@ export async function ghGet<T>(path: string, viewerToken?: string, opts: { fresh
   const hit = cache.get(url);
   if (!opts.fresh && hit && Date.now() - hit.at < TTL_MS) return hit.value as T;
 
-  const res = await fetch(url, {
-    headers: headers(readToken(viewerToken), opts.raw ? { Accept: "application/vnd.github.raw" } : undefined),
+  const token = readToken(viewerToken);
+  let res = await fetch(url, {
+    headers: headers(token, opts.raw ? { Accept: "application/vnd.github.raw" } : undefined),
     cache: "no-store",
   });
+  // A bad GITHUB_TOKEN shouldn't take the site down: drop it and read as the viewer.
+  if (res.status === 401 && token && token === serverToken() && viewerToken && viewerToken !== token) {
+    serverTokenRejected = true;
+    console.warn("GITHUB_TOKEN was rejected by GitHub (401). Reading with the signed-in viewer's token instead.");
+    res = await fetch(url, {
+      headers: headers(viewerToken, opts.raw ? { Accept: "application/vnd.github.raw" } : undefined),
+      cache: "no-store",
+    });
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new GitHubError(res.status, `GET ${path}: ${res.status} ${body.slice(0, 200)}`);

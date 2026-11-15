@@ -5,6 +5,7 @@ import { ErrorPanel, formatNight, Header, runLabel, SectionTitle, TaskTag, timeA
 import { baseStatuses, isAccepted, isOpen, lastNights, listRuns, needsYou, taskStats, VERDICT_TEXT, type BaseStatus, type RunSummary } from "@/lib/runs";
 import { requireViewer } from "@/lib/session";
 import { describeSchedule, type FactoryTask } from "@/lib/tasks";
+import { serverTokenStatus } from "@/lib/github";
 import { workerConfigured } from "@/lib/worker";
 
 export const dynamic = "force-dynamic";
@@ -56,12 +57,20 @@ export default async function Overview({ searchParams }: { searchParams: Promise
 
   const listed = runs.filter((r) => (!taskFilter || r.task.id === taskFilter) && (show !== "open" || isOpen(r.verdict)));
   const noWorker = !workerConfigured();
+  const tokenStatus = serverTokenStatus();
   const anyEnabled = tasks.some((t) => t.enabled);
 
   return (
     <>
       <Header viewer={viewer} />
       <main className="mx-auto max-w-6xl space-y-10 px-5 py-8">
+        {tokenStatus !== "ok" && (
+          <div className="rounded-xl border border-warn/30 bg-warn/5 px-5 py-3 text-sm text-ink-2">
+            {tokenStatus === "rejected"
+              ? "GitHub rejected the GITHUB_TOKEN set in Vercel (401), so pages are reading with your own sign-in. The scheduler can't start runs until it's replaced with a valid token."
+              : "GITHUB_TOKEN isn't set in Vercel. Pages read with your own sign-in; the scheduler needs it to start runs."}
+          </div>
+        )}
         {(noWorker || !anyEnabled) && (
           <div className="rounded-xl border border-info/30 bg-info/5 px-5 py-3 text-sm text-ink-2">
             {noWorker
